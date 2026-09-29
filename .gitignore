@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dist-test/
+coverage/
+.tmp-demo/
+*.tgz
+*.log
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+.env
+.env.*
+
+# Trellis: Python script caches (generated at runtime, not source)
+__pycache__/
+*.py[cod]

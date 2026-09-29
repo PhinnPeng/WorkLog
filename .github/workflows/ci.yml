@@ -1,0 +1,71 @@
+name: CI
+
+# M0 S7 / AC-8：三平台矩阵。
+# 这里的断言失败**不许改断言迁就文档** —— 按 PRD 5.3.2 与 S7 的约定，
+# 不符时改 docs/PRD.md 第 8 节并同步 D27。
+#
+# 排查提示：作业日志端点即便对公开仓也要求管理员权限（实测 403），匿名 REST 只有
+# 60 次/小时。所以每个可能失败的步骤都把输出 tee 到 ./*.log，最后由
+# scripts/ci-publish-status.mjs 汇总成 ci-diagnosis/<os>.md 提交到同名分支 ——
+# 那份文件可以从 raw.githubusercontent.com 直接读，成功失败都写。
+# 为此本流水线需要 contents: write（只写 ci-diagnosis 分支，不碰 main）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: 安装依赖（干净锁文件）
+        run: npm ci
+
+      # 拆成四个独立步骤，是为了让"哪一阶段红"能从步骤结论里读出来 ——
+      # 合成一步时只能看到 failure，拿不到日志。
+
+      - name: 构建
+        run: npm run build
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: Lint（门禁 A 的 eslint 层）
+        run: npm run lint
+
+      - name: 测试（门禁 A/B/C 的权威层 + M1 契约）
+        shell: bash
+        run: set -o pipefail && npm test 2>&1 | tee .test.log
+
+      - name: env-paths 三平台落点实测并断言（AC-8 / 闭合 O13）
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: set -o pipefail && npm run ci:paths 2>&1 | tee .paths.log
+
+      - name: 全局安装冒烟：无编译工具链（AC-8 后半）
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: set -o pipefail && npm run ci:global 2>&1 | tee .global.log
+
+      - name: 把结论发布到 ci-diagnosis 分支（raw 可直读，不占 API 配额）
+        if: ${{ always() }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+        run: node scripts/ci-publish-status.mjs

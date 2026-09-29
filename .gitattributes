@@ -1,0 +1,13 @@
+# 统一行尾：文本文件在仓库内与检出后一律 LF。
+# 必须显式写 eol=lf —— 本机 core.autocrlf=true 会把工作区转成 CRLF，
+# 单靠 `text=auto` 只约束索引侧、压不过它，每次 git add 仍会刷
+# "LF will be replaced by CRLF" 警告（已实测：仅 text=auto 时新增
+# 4 个文件即产生 4 条警告）。
+* text=auto eol=lf
+
+# Trellis 原有规则：开发者 journal 每次会话只追加一个新块，跨并行
+# 会话/工作树之间实际没有可冲突的内容，故按 union 合并。
+#
+# 不要为 workspace/*/index.md 加同类规则 —— 它每次会话整体重新生成，
+# 真冲突时任选一侧都是安全的（任务状态在 task.json，不在 index.md）。
+.trellis/workspace/*/journal-*.md merge=union
