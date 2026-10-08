@@ -20,10 +20,7 @@ import {
   todayLocal,
 } from '../validate.js';
 import { ITEM_TYPES, SOURCES, STATUSES } from '../spec.js';
-
-function conflict(code: WorkReportError['code'], message: string, field: string): WorkReportError {
-  return new WorkReportError(code, message, { field });
-}
+import { assertRowCoherent } from '../rowchecks.js';
 
 /** 状态缺省值：显式 flag > 配置的 `default_status`（仅对 log 生效）> 类型默认。 */
 function fallbackStatus(itemType: ItemType, configStatus?: string | null): string {
@@ -74,23 +71,7 @@ export function runAdd(opts: Record<string, unknown>): PublicItem {
     'status',
   );
 
-  if (itemType === 'log' && status === 'planned') {
-    throw conflict(
-      Code.CONFLICT_STATUS_PLANNED_FOR_LOG,
-      'item_type=log 时 status 不能为 planned',
-      'status',
-    );
-  }
-  if (itemType === 'log' && plannedFor !== null) {
-    throw conflict(Code.CONFLICT_PLANNED_FOR_ON_LOG, 'item_type=log 时不能带 planned_for', 'planned_for');
-  }
-  if (itemType === 'plan' && plannedFor === null) {
-    throw conflict(
-      Code.CONFLICT_PLAN_MISSING_PLANNED_FOR,
-      'item_type=plan 必须给出 --planned-for',
-      'planned_for',
-    );
-  }
+  assertRowCoherent({ item_type: itemType, status, planned_for: plannedFor });
 
   const now = new Date().toISOString();
   const item: WorkItem = {

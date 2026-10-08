@@ -11,6 +11,11 @@ import { runList } from './commands/list.js';
 import { runShow } from './commands/show.js';
 import { runSearch } from './commands/search.js';
 import { runCategories } from './commands/categories.js';
+import { runUpdate } from './commands/update.js';
+import { runConvert } from './commands/convert.js';
+import { runDelete, runRestore, runPurge } from './commands/lifecycle.js';
+import { runConfig } from './commands/config.js';
+import { runBackup } from './commands/backup.js';
 import { clip, emit, emitText, stderrIsTty, warn, type OutputOpts } from './output.js';
 import { render } from './render.js';
 import { resolveFormat } from './format.js';
@@ -26,6 +31,13 @@ const HANDLERS: Record<string, Handler> = {
   show: runShow,
   search: runSearch,
   categories: runCategories,
+  update: runUpdate,
+  convert: runConvert,
+  delete: runDelete,
+  restore: runRestore,
+  purge: runPurge,
+  config: runConfig,
+  backup: runBackup,
 };
 
 function addFlag(target: Command, flag: FlagSpec): void {
@@ -69,9 +81,18 @@ export function buildProgram(): Command {
     const sub = program.command(c.name).description(c.description);
     sub.exitOverride();
     sub.configureOutput({ writeErr: () => {} });
+    // 复数形式：commander 的 .argument() 一次只声明一个参数，整串要在 .arguments() 里拆。
+    if (c.args) sub.arguments(c.args);
     for (const f of c.flags) addFlag(sub, f);
-    sub.action((local: Record<string, unknown>, cmd: Command) => {
-      const merged = { ...cmd.optsWithGlobals(), ...local };
+    // 声明了位置参数的命令（config），commander 会按声明顺序逐个传进来，末位恒是 Command。
+    // 统一收进 _args，命令层就不必各自猜回调的形参顺序。
+    sub.action((...callArgs: unknown[]) => {
+      const cmd = callArgs[callArgs.length - 1] as Command;
+      const positionalArgs = callArgs.slice(0, -1).filter((a): a is string => typeof a === 'string');
+      const merged: Record<string, unknown> = {
+        ...cmd.optsWithGlobals(),
+        ...(positionalArgs.length > 0 ? { _args: positionalArgs } : {}),
+      };
       // commander 把 `--no-color` 落成 color=false（不给时默认 true）。
       const presentation: OutputOpts = {
         pretty: Boolean(merged.pretty),

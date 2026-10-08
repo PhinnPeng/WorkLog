@@ -256,3 +256,66 @@ export function queryCategories(
     .map((r) => ({ category: String(r.category), count: Number(r.count) }))
     .sort((a, b) => b.count - a.count || a.category.localeCompare(b.category));
 }
+
+/** 按完整 id 取整行（**含墓碑** —— 是否报 DELETED 由命令层裁决）。 */
+export function loadItem(db: Database, id: string): WorkItem | undefined {
+  const row = db.prepare(`SELECT ${COLUMNS} FROM work_items WHERE id = ?`).get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? rowToItem(row) : undefined;
+}
+
+export interface ItemPatch {
+  item_type?: ItemType;
+  date?: string;
+  time?: string | null;
+  content?: string;
+  category?: string | null;
+  status?: string;
+  source?: string;
+  planned_for?: string | null;
+}
+
+/**
+ * 部分更新：只写传进来的字段，`updated_at` 一律刷新。
+ * 跨字段一致性不在这里判 —— 由命令层对"更新后的整行"调 assertRowCoherent，
+ * 且必须发生在同一个 IMMEDIATE 事务里，否则校验与写入之间有竞态窗口。
+ */
+export function updateItem(db: Database, id: string, patch: ItemPatch, now: string): WorkItem {
+  const keys = Object.keys(patch) as Array<keyof ItemPatch>;
+  const sets = [...keys.map((k) => `${k} = ?`), 'updated_at = ?'].join(', ');
+  db.prepare(`UPDATE work_items SET ${sets} WHERE id = ?`).run(
+    ...keys.map((k) => patch[k] as SQLInputValue),
+    now,
+    id,
+  );
+  return loadItem(db, id)!;
+}
+
+/** 软删除与复原共用：置或清 `deleted_at`（5.2.6）。 */
+export function setDeletedAt(db: Database, id: string, deletedAt: string | null): WorkItem {
+  db.prepare('UPDATE work_items SET deleted_at = ?, updated_at = ? WHERE id = ?').run(
+    deletedAt,
+    new Date().toISOString(),
+    id,
+  );
+  return loadItem(db, id)!;
+}
+
+/**
+ * 物理删除过期墓碑（5.2.6）。`deleted_at` 是 UTC 带 Z 的 ISO 串，字典序即时间序，
+ * 所以可以直接和 cutoff 串比较。返回删除条数。
+ */
+export function purgeTombstones(db: Database, olderThanDays: number): number {
+  const cutoff = new Date(Date.now() - olderThanDays * 86_400_000).toISOString();
+  const res = db.prepare('DELETE FROM work_items WHERE deleted_at IS NOT NULL AND deleted_at < ?').run(cutoff);
+  return Number(res.changes);
+}
+
+/** 供 `backup` 回显 item_count（含墓碑时由调用方决定过滤口径）。 */
+export function countItems(db: Database, includeDeleted = false): number {
+  const sql = includeDeleted
+    ? 'SELECT COUNT(*) AS c FROM work_items'
+    : 'SELECT COUNT(*) AS c FROM work_items WHERE deleted_at IS NULL';
+  return Number((db.prepare(sql).get() as { c: number | bigint }).c);
+}

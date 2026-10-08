@@ -39,6 +39,12 @@ export interface CommandSpec {
   readOnly: boolean;
   /** `--format table|markdown` 的数据体形态；describe/doctor 恒为 JSON */
   render?: RenderKind;
+  /**
+   * commander 风格的位置参数声明。只有 `config` 用它（`config set|get|list`），
+   * 目的是保住"一个命令对应一条 spec"的映射 —— 换成嵌套子命令树，门禁 C 那条
+   * "声明集合 === 注册集合"的同源断言就要长出一套递归规则。
+   */
+  args?: string;
 }
 
 export const FORMATS = ['json', 'table', 'markdown'] as const;
@@ -180,6 +186,88 @@ export const COMMANDS: readonly CommandSpec[] = [
       { declaration: '--prefix <s>', description: '前缀查漏，判断是否已有近似分类', scope: 'command' },
     ],
   },
+  {
+    name: 'update',
+    description: '按 id 更新字段。不接受 --item-type（类型迁移唯一入口是 convert）',
+    readOnly: false,
+    render: 'item',
+    flags: [
+      { declaration: '--id <id>', description: 'ULID 或其唯一前缀', required: true, scope: 'command' },
+      {
+        // 刻意声明但不接受：不声明的话 commander 会以"未知选项"拦下，Agent 就拿不到
+        // hint 里指向 convert 的那句指路（5.2.4 明确要求）。真正的拒绝在 update.ts 里。
+        declaration: '--item-type <t>',
+        description: '不接受：类型迁移的唯一入口是 convert（传了会 USAGE_ERROR 并指向 convert）',
+        values: ITEM_TYPES,
+        scope: 'command',
+      },
+      { declaration: '--content <text>', description: '新内容（传 - 从 stdin 读）', scope: 'command' },
+      { declaration: '--date <d>', description: '新记录日期 YYYY-MM-DD', scope: 'command' },
+      { declaration: '--time <t>', description: '新时刻 HH:MM；传空串清除', scope: 'command' },
+      { declaration: '--category <s>', description: '新分类；传空串清除', scope: 'command' },
+      { declaration: '--status <s>', description: '新状态（更新后整行仍须满足 5.1.1）', values: STATUSES, scope: 'command' },
+      { declaration: '--source <s>', description: '新来源', values: SOURCES, scope: 'command' },
+      { declaration: '--planned-for <d>', description: '新计划归属日；仅对 plan 合法', scope: 'command' },
+    ],
+  },
+  {
+    name: 'convert',
+    description: '类型迁移的唯一入口，双向；log↔plan 的 status/planned_for 联动只在这里推导',
+    readOnly: false,
+    render: 'item',
+    flags: [
+      { declaration: '--id <id>', description: 'ULID 或其唯一前缀', required: true, scope: 'command' },
+      { declaration: '--to <t>', description: '目标类型，默认 log', values: ITEM_TYPES, scope: 'command' },
+      { declaration: '--date <d>', description: '转为 log 时必填：它实际发生的那天', scope: 'command' },
+      { declaration: '--planned-for <d>', description: '转为 plan 时给出归属日', scope: 'command' },
+      { declaration: '--status <s>', description: '状态；--to log 缺省取 done，--to plan 缺省取 planned', values: STATUSES, scope: 'command' },
+      { declaration: '--category <s>', description: '覆盖分类', scope: 'command' },
+      { declaration: '--content <text>', description: '覆盖内容', scope: 'command' },
+      { declaration: '--time <t>', description: '覆盖时刻（仅 --to log 有意义）', scope: 'command' },
+    ],
+  },
+  {
+    name: 'delete',
+    description: '软删除（置 deleted_at）；所有查询默认排除墓碑',
+    readOnly: false,
+    render: 'item',
+    flags: [
+      { declaration: '--id <id>', description: 'ULID 或其唯一前缀', required: true, scope: 'command' },
+      { declaration: '--dry-run', description: '只做 id 解析并返回将被删的条目，不写库（供 Agent 复述确认）', scope: 'command' },
+    ],
+  },
+  {
+    name: 'restore',
+    description: '复原软删除条目（清 deleted_at）；id 在软删期间仍占用，故复原可行',
+    readOnly: false,
+    render: 'item',
+    flags: [{ declaration: '--id <id>', description: 'ULID 或其唯一前缀', required: true, scope: 'command' }],
+  },
+  {
+    name: 'purge',
+    description: '物理删除过期墓碑 —— 本工具唯一不可逆操作，需双显式确认',
+    readOnly: false,
+    flags: [
+      { declaration: '--older-than <Nd>', description: '只清这么多天之前删的墓碑，例如 30d。**无默认值**', required: true, scope: 'command' },
+      { declaration: '--yes', description: '不可逆操作的确认位；缺失即 VALIDATION_ERROR', scope: 'command' },
+    ],
+  },
+  {
+    name: 'config',
+    description: '读／写配置。list 会标注每项来源，答"为什么改了没生效"',
+    readOnly: false,
+    args: '<subcommand> [key] [value]',
+    flags: [],
+  },
+  {
+    name: 'backup',
+    description: '快照当前库到文件（VACUUM INTO，产物为已合并 WAL 的单文件）',
+    readOnly: false,
+    flags: [
+      { declaration: '--output <path>', description: '目标文件；缺省落 <data_dir>/backups/workreport-<日期>.db', scope: 'command' },
+      { declaration: '--force', description: '允许覆盖已存在的目标文件（默认拒绝并报 PATH_EXISTS）', scope: 'command' },
+    ],
+  },
 ];
 
 /**
@@ -195,7 +283,13 @@ export interface PublicFlag extends FlagSpec {
 
 export interface DescribePayload {
   version: string;
-  commands: Array<{ name: string; description: string; readonly: boolean; flags: PublicFlag[] }>;
+  commands: Array<{
+    name: string;
+    description: string;
+    readonly: boolean;
+    args?: string;
+    flags: PublicFlag[];
+  }>;
   global_flags: PublicFlag[];
   error_codes: Array<{ code: CodeT; exit: number }>;
   exit_codes: Array<{ code: number; meaning: string }>;
@@ -251,6 +345,7 @@ export function buildDescribe(): DescribePayload {
       name: c.name,
       description: c.description,
       readonly: c.readOnly,
+      ...(c.args ? { args: c.args } : {}),
       flags: [...flags('global'), ...c.flags].map(publicFlag),
     })),
     global_flags: flags('global').map(publicFlag),

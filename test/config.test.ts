@@ -133,3 +133,140 @@ describe('config.default_format（5.4、5.6）', () => {
     expect(JSON.parse(stdout)).toHaveProperty('items');
   });
 });
+
+describe('config 命令（5.2.10）', () => {
+  /** 带 env 覆写的调用（验 WORKREPORT_HOME 的来源优先级用）。 */
+  async function cliEnv(extra: NodeJS.ProcessEnv, args: string[]) {
+    try {
+      const { stdout, stderr } = await run(process.execPath, [BIN, '--db', db, ...args], {
+        env: { ...env, ...extra },
+        shell: false,
+      });
+      return { stdout, stderr, code: 0 };
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; code?: number };
+      return { stdout: err.stdout ?? '', stderr: err.stderr ?? '', code: err.code ?? 1 };
+    }
+  }
+
+  const code = (stderr: string) => (JSON.parse(stderr.trimEnd()) as { code: string }).code;
+
+  it('set 写入、get 原样回显；null 表示取消默认值', async () => {
+    expect((await cli(['config', 'set', 'default_category', '信息部事务'])).code).toBe(0);
+    const got = await cli(['config', 'get', 'default_category']);
+    expect(JSON.parse(got.stdout)).toMatchObject({ key: 'default_category', value: '信息部事务' });
+
+    await cli(['config', 'set', 'default_category', 'null']);
+    expect(JSON.parse((await cli(['config', 'get', 'default_category'])).stdout).value).toBeNull();
+  });
+
+  it('data_dir 一律存展开后的绝对路径（5.3.0 第 1 条）', async () => {
+    const { stdout } = await cli(['config', 'set', 'data_dir', '~/records-x']);
+    const stored = JSON.parse(stdout) as { data_dir: string };
+    expect(stored.data_dir.startsWith('~')).toBe(false);
+    expect(stored.data_dir).toContain(`records-x`);
+  });
+
+  it('default_category 会被 add 消费，成为录入的缺省分类', async () => {
+    await cli(['config', 'set', 'default_category', '自动分类']);
+    const added = JSON.parse((await cli(['add', '--content', '带默认分类的记录'])).stdout) as { category: string };
+    expect(added.category).toBe('自动分类');
+    await cli(['config', 'set', 'default_category', 'null']);
+  });
+
+  it('list 标注每项来源：file > default，env 又压过 file', async () => {
+    await cli(['config', 'set', 'default_status', 'in_progress']);
+    const listed = JSON.parse((await cli(['config', 'list'])).stdout) as {
+      values: Record<string, { value: string | null; source: string }>;
+    };
+    expect(listed.values.default_status).toEqual({ value: 'in_progress', source: 'file' });
+    expect(listed.values.data_dir!.source).toBe('file'); // 上一条测试设过 ~/records-x
+    expect(listed.values.default_format).toEqual({ value: 'json', source: 'file' });
+
+    const withEnv = JSON.parse((await cliEnv({ WORKREPORT_HOME: join(sandbox, 'envhome') }, ['config', 'list'])).stdout) as {
+      values: Record<string, { source: string }>;
+    };
+    expect(withEnv.values.data_dir!.source).toBe('env');
+  });
+
+  it('未知配置项与非法枚举都是用法错（退出 2，带可选值提示）', async () => {
+    const badKey = await cli(['config', 'set', 'nope', '1']);
+    expect(badKey.code).toBe(2);
+    expect(code(badKey.stderr)).toBe('USAGE_ERROR');
+
+    const badValue = await cli(['config', 'set', 'default_format', 'plain']);
+    expect(badValue.code).toBe(2);
+    expect(code(badValue.stderr)).toBe('USAGE_ERROR');
+    expect(badValue.stderr).toContain('json');
+
+    const badSub = await cli(['config', 'nope']);
+    expect(badSub.code).toBe(2);
+    expect(code(badSub.stderr)).toBe('USAGE_ERROR');
+  });
+});
+
+describe('config set data_dir 的未迁移告警（5.2.10、D30）', () => {
+  /**
+   * 不带 `--db` 的调用：`--db` 压过配置，那样测不到"换落点"这件事 —— 而本组用例
+   * 验的正是配置链自己换落点时的告警。
+   */
+  async function cliNoDb(args: string[]) {
+    try {
+      const { stdout, stderr } = await run(process.execPath, [BIN, ...args], { env, shell: false });
+      return { stdout, stderr, code: 0 };
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; code?: number };
+      return { stdout: err.stdout ?? '', stderr: err.stderr ?? '', code: err.code ?? 1 };
+    }
+  }
+
+  it('回显新旧库条目数；新库为空时警告未迁移；返回体带 migrated:false', async () => {
+    const oldDir = join(sandbox, 'old-data');
+    const newDir = join(sandbox, 'new-data');
+    writeConfig(JSON.stringify({ data_dir: oldDir, default_format: 'json' }));
+
+    // 旧库里先有一条真实数据，否则"未迁移"这句话无从谈起
+    expect((await cliNoDb(['add', '--content', '留在旧库的记录'])).code).toBe(0);
+
+    const { stdout, stderr, code } = await cliNoDb(['config', 'set', 'data_dir', newDir]);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout) as unknown).toMatchObject({ data_dir: newDir, migrated: false });
+
+    const oldDb = join(oldDir, 'workreport.db');
+    const newDb = join(newDir, 'workreport.db');
+    expect(stderr).toContain(`旧库 ${oldDb}：1 条`);
+    expect(stderr).toContain(`新库 ${newDb}：0 条`);
+    expect(stderr).toContain(`旧数据仍在 ${oldDb}，本命令未迁移`);
+    // 告警只能走 stderr：混进 stdout 就让 Agent 的 JSON.parse 崩了（5.2.1）
+    expect(() => JSON.parse(stdout)).not.toThrow();
+  });
+
+  it('两边都有数据时不误报未迁移', async () => {
+    const oldDir = join(sandbox, 'old-data');
+    const newDir = join(sandbox, 'new-data');
+    // 上一条把落点切到了 new-data，这里让它也有数据
+    expect((await cliNoDb(['add', '--content', '新库里的记录'])).code).toBe(0);
+
+    const { stdout, stderr } = await cliNoDb(['config', 'set', 'data_dir', oldDir]);
+    expect(JSON.parse(stdout) as unknown).toMatchObject({ data_dir: oldDir });
+    expect(stderr).not.toContain('未迁移');
+    expect(stderr).toContain(`旧库 ${join(newDir, 'workreport.db')}：1 条`);
+    expect(stderr).toContain(`新库 ${join(oldDir, 'workreport.db')}：1 条`);
+  });
+
+  it('--quiet 抑制告警但 migrated 字段仍在（5.2.0 与 5.2.10 各管一半）', async () => {
+    const { stdout, stderr, code } = await cliNoDb([
+      'config',
+      'set',
+      'data_dir',
+      join(sandbox, 'quiet-data'),
+      '--quiet',
+    ]);
+    expect(code).toBe(0);
+    expect(stderr).toBe('');
+    expect(JSON.parse(stdout) as unknown).toMatchObject({ migrated: false });
+
+    // 收尾：把落点清回平台默认，别把沙箱状态留给后面的人
+    writeConfig(JSON.stringify({ default_format: 'json' }));
+  });
+});
