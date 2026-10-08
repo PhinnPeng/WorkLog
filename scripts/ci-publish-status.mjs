@@ -17,6 +17,10 @@ const repo = process.env.GITHUB_REPOSITORY;
 const sha = process.env.GITHUB_SHA;
 const runId = process.env.GITHUB_RUN_ID;
 const os = process.env.RUNNER_OS ?? 'unknown';
+// 矩阵按 node 主版本分了轴，同一 OS 会有多个 job，文件名必须带上它 ——
+// 否则两个 job 互相覆盖，诊断通道只剩最后写的那一个。
+const nodeMajor = process.env.NODE_MAJOR ?? '';
+const suffix = nodeMajor ? `-node${nodeMajor}` : '';
 const status = process.env.JOB_STATUS ?? 'unknown';
 
 if (!token || !repo) {
@@ -43,7 +47,7 @@ function tail(file, pattern, count = 8) {
 }
 
 const body = [
-  `# CI 结论 · ${os}`,
+  `# CI 结论 · ${os}${nodeMajor ? ` / Node ${nodeMajor}` : ''}`,
   '',
   `- job: \`${status}\``,
   `- commit: \`${sha}\``,
@@ -60,7 +64,7 @@ const body = [
   '',
 ].join('\n');
 
-const path = `ci-diagnosis/${os.toLowerCase()}.md`;
+const path = `ci-diagnosis/${os.toLowerCase()}${suffix}.md`;
 const ref = 'ci-diagnosis';
 const base = `${api}/repos/${repo}/contents/${path}?ref=${ref}`;
 

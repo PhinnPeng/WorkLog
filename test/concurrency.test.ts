@@ -31,7 +31,7 @@ beforeAll(async () => {
     entry: { 'concurrency-writer': 'test/fixtures/concurrency-writer.ts' },
     outDir: 'dist-test',
     format: ['esm'],
-    target: 'node24',
+    target: 'node22',
     platform: 'node',
     external: ['node:sqlite'],
     splitting: false,

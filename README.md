@@ -16,14 +16,17 @@ workreport describe --format json
 | :--- | :--- | :--- |
 | M0 | schema 与迁移、WAL/busy_timeout、流分离契约、错误码与退出码、路径展开、`describe`/`doctor` | ✅ 完成（三道门禁全绿） |
 | M1 | `add` / `list` / `show` / `search` / `categories` | ✅ 完成 |
-| M0 S7 | 三平台 CI matrix（`env-paths` 实测对齐 PRD 第 8 节） | ✅ 三平台全绿（run 36542928932：ubuntu / macOS / Windows 各 77/77 + 目录断言 + 无编译工具链） |
-| M2+ | `update` / `convert` / `delete`+`restore`+`purge` / `config` / `backup` / `report` | ❌ 未开始 |
+| M0 S7 | 三平台 CI matrix（`env-paths` 实测对齐 PRD 第 8 节） | ✅ 三平台全绿（run 36542928932：ubuntu / macOS / Windows 各 77/77 + 目录断言 + 无编译工具链）；矩阵已加 Node 22 轴 |
+| M2 | `update` / `convert` / `delete`+`restore`+`purge` / `config` / `backup` | ✅ 完成 |
+| M3+ | `report` / `export` / `import` | ❌ 未开始 |
 
 未实现的命令会以 `USAGE_ERROR`（退出码 2）拒绝，而不是半途行为。
 
 ## 跑起来
 
-要求 Node ≥ 24（使用内置 `node:sqlite`，无编译工具链依赖）。
+要求 Node 提供**无需 flag 的内置 `node:sqlite`**：`engines` 声明 `>=22.22.0 <23 || >=23.4.0`
+（该模块在 22.5 引入但需 `--experimental-sqlite`，23.4 起取消；23.0–23.3 是断档，Node 20 没有）。
+本地与 CI 实测的运行版本是 **22.22.0 与 24.18.0**，无编译工具链依赖。
 
 ```bash
 npm ci

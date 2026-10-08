@@ -783,7 +783,10 @@ CLI 不集成 AI。外部 Agent 通过 SKILL 调用 CLI。
   - 开发依赖：`typescript`、`vitest`、`tsup`。
   - **检索零额外依赖**：不使用 FTS5、不引入分词器、不引入 ICU（理由与实测见 5.3.1）。`search` 与 `list --keyword` 共用同一实现。
   - 所有路径参数（`--output`、`--db`、`config` 的 `data_dir`）由 CLI 自行展开 `~` 与 `$VAR`，**不得依赖 shell** —— Agent 经 `execFile` 调用不经过 shell，未展开会污染当前工作目录，违反第 1 节"零运行目录污染"。
-- **Node 版本**：`engines.node` 暂定 **`>=24.0.0`**。依据：`node:sqlite` 在 v24.18.0 实测可用且**不产生 ExperimentalWarning**（stderr 干净，不违反 5.2.1 的流契约）。22.x 未测 —— 若要下探须另验，不要凭"22.5 起存在"直接写 `>=22.5.0`。
+- **Node 版本**：`engines.node` 为 **`>=22.22.0 <23 || >=23.4.0`**。约束的**真身是"提供无需 flag 的 `node:sqlite`"**：该模块 22.5.0 引入但需 `--experimental-sqlite`，23.4.0 起取消该 flag，Node 20 及更早完全没有该模块。版本号只是这条约束的近似写法 —— 各 22.x／23.x 的具体取消版本未能在离线环境核实，故只声明**实测过的两条线**（模块存在性按版本号判断本就不可靠：22.22.0 有、20.16.0 没有）。
+  - **为何曾写 `>=24.0.0`**：当时的理由是"v24.18.0 不产生 ExperimentalWarning，stderr 干净，不违反 5.2.1 的流契约"。22.x 上那行 `ExperimentalWarning` 现已由 `src/db/sqlite.ts` **在进程内过滤**（只滤 `ExperimentalWarning` 且消息含 `SQLite`，其余原样放行）—— 启动方式由调用方决定（bin 是 `#!/usr/bin/env node`），我们改不了它的命令行，只能在这一层做。该理由随之消失，见 D52。
+  - **实测边界（2026-10-08）**：22.22.0 与 24.18.0 各跑完整 `npm run verify`（build + typecheck + lint + 104 用例）全绿，含 AC-3 并发"零 DB_LOCKED"与 `JSON.parse(stderr)` 用例；`npm run ci:paths`／`ci:global` 在 22 上同样通过。**22.x 更早版本与 23.x 未测**，CI 的 node 轴目前只跑 22 与 24。内置 SQLite 版本随 Node 走（22.22.0 → 3.50.4，24.18.0 → 3.53.1），本项目用到的 SQL 与 PRAGMA 在两版上行为一致。
+  - **`@types/node` 仍是 24.x**：类型面与运行面下限不一致（我们未用到 24 独有的 API，22 上实测通过），仅记其存在，不为此改 lock（改动会牵动 `package-lock.json`，须另开任务带着网络做）。
 - **安装**：`npm install -g @phinnpeng/workreport`。采用 `node:sqlite` 后此路径**不再有编译工具链要求**（无 prebuilt 下载、无 node-gyp），这是驱动决策的主要收益。
 - **数据隐私**：所有数据本地存储，**运行期零网络请求**。选 `node:sqlite` 后连安装期的 prebuilt 下载也消失，供应链面缩到三个纯 JS 包。
 - **Windows 兼容性**：目录由 `env-paths` 给出（第 8 节）；数据目录路径含空格（`AppData\Roaming`），错误信息与 `doctor` 回显须原样带空格而非截断。原生模块编译风险随 `node:sqlite` 的采用而消失。
@@ -898,7 +901,7 @@ CLI 不集成 AI。外部 Agent 通过 SKILL 调用 CLI。
 
 | # | 议题 | 挂起于 |
 | :--- | :--- | :--- |
-| O9 | ~~`better-sqlite3` vs 内置 `node:sqlite`~~ | **已闭合：采用 `node:sqlite`，去掉 `better-sqlite3`**。spike 实测见附录 B 与 D38；`engines.node` 下限暂定 `>=24.0.0`（仅在 v24.18.0 验证过，若要下探 22.x 需另测） |
+| O9 | ~~`better-sqlite3` vs 内置 `node:sqlite`~~ | **已闭合：采用 `node:sqlite`，去掉 `better-sqlite3`**。spike 实测见附录 B 与 D38；`engines.node` 下限曾在 v24.18.0 单点验证后暂定 `>=24.0.0`，2026-10-08 已下探并复验（22.22.0 与 24.18.0 各跑完整门禁全绿）—— 见第 6 节与 **D52** |
 | O11 | ~~计划完成率统计~~ | **已闭合：不做**（用户 2026-09-24 明确"不需要计划完成率"）。见 D33 |
 | O12 | ~~`--count` 是否入 `describe.limits`~~ | **已闭合：`--count` 整个删掉**，问题不存在。见 D34 |
 | **O14** | ~~包名未定~~ | **已闭合：采用 `@phinnpeng/workreport`，命令名 `workreport`**（用户 2026-09-24 先定 `worklog`（D37），同日更名，见 D44）。遗留两项发布前须自证：scope 归属、npm 登录态（10.2） |
@@ -939,7 +942,8 @@ CLI 不集成 AI。外部 Agent 通过 SKILL 调用 CLI。
 | D50 | **GitHub 仓库名定为 `PhinnPeng/WorkLog`，与包名/命令名解耦**（用户 2026-09-29："远程仓库已改名为 WorkLog，采用 WorkLog 即可"）。核过的证据：旧名 `PhinnPeng/WorkReport` 的 API 返回 **301 → `repositories/1385154844`**，规范名 `PhinnPeng/WorkLog`，**repo id 不变**（是改名而非新建，远端 `main` 仍指向改名前的最后一次提交）。落地：`git remote set-url origin git@github.com:PhinnPeng/WorkLog.git`，`fetch`/`push` 双向已验（`HEAD == origin/main`，push 报 `Everything up-to-date`）。**范围边界要写清**：仓库名只是托管位置，npm 包名 `@phinnpeng/workreport`、命令名 `workreport`、环境变量 `WORKREPORT_HOME`、`env-paths` 应用标识 `workreport`（第 8 节的三平台目录）**全部不变** —— 它们是与外部调用方约定的契约（5.7.1 semver 治理），而 D36/10.2 记录的裸名 `worklog` 抢占风险正是靠命令名不叫 `worklog` 才消解的。若将来要把产品名也改回 WorkLog，那是一次**新的破坏性更名**，需重走 10.2 的占用实测 | 已定稿 | 第 1 节、10.2、D44 |
 | D51 | **提交历史压缩为单条根提交**（用户 2026-09-29："抹掉，并清理远端历史，保持为当前状态的首次提交"）。起因是仓库最初 5 条提交的正文带 `Co-Authored-By: Claude <noreply@anthropic.com>` 尾注 —— 那是当时所用命令行工具的默认署名行为，author/committer 一直是 `phinnpeng`，从未被改写，GitHub 只是把尾注解析成共同作者显示出来。做法：先给改写前的 HEAD 打本地标记（保留回滚路径，不推远端），再以 orphan 分支把当前工作树提交成唯一根提交，`push --force` 覆盖远端 `main`，并删除 `ci-diagnosis` 分支（CI 下次运行自行重建）。**代价与边界，如实记下**：① 原先 47 条提交的逐条可追溯性没有了，里程碑复原只能靠本章 D 记录、`spikes/` 与 README 状态表；② 此前文档引用的 commit SHA 全部失效，故 D50 已改成不含 SHA 的表述（CI run 编号与 repo id 不受影响）；③ GitHub 侧 Actions 的历史 run 记录、以及内部 GC 完成前的悬挂对象，不是一次分支强推能清除的范围 —— 远端分支历史被替换是确定的，但"全网无痕"这种话不该写 | 已定稿 | 第 1 节、11 章 |
 
-### 11.2 输出契约
+| D52 | **下探 Node 22：抑制 `node:sqlite` 的 ExperimentalWarning，`engines` 改 `>=22.22.0 <23 \|\| >=23.4.0`**（用户 2026-10-08 要求"支持 22"）。① 阻塞点正是第 6 节原来据以选 24 的那一条：22.x 在进程**首次真正用到** `node:sqlite` 时往 stderr 打一行 `ExperimentalWarning: SQLite is an experimental feature`，而 5.2.1／D3 要求"错误行恒为单行、可 `JSON.parse`" —— 实测它让 24 条契约用例集体报成 `JSON.parse(stderr)` 失败，报错文本全指向业务代码，根因却在 node 版本。② 解法落在 `src/db/sqlite.ts`：在 import 之前把 `process.emitWarning` 换成只滤 `ExperimentalWarning` + 消息含 `SQLite` 的包装，其余警告原样放行。选进程内而不用 `--no-warnings`：bin 是 `#!/usr/bin/env node`，启动方式由调用方（宿主 Agent）决定，我们既改不了它的命令行也不该要求它设 `NODE_OPTIONS`。③ `engines` 必须写成两段式，不能是单一 `>=22.22.0`：`node:sqlite` 22.5.0 引入但需 flag、23.4.0 起取消，故 **23.0–23.3 是断档**，单一范围会把它们错误地放进来（实测该范围对 23.0.0／23.3.0 判定为不满足）。**只声明实测过的两条线**：22.22.0 与 24.18.0 各跑完整 `npm run verify`（build + typecheck + lint + 104 用例）全绿，AC-3 在 22 上 768ms／零 `DB_LOCKED`、`npm run ci:paths`／`ci:global` 亦通过；22.x 更早版本与 23.x 未测 —— 离线环境无法核实各版本取消 flag 的确切时点，故不凭"22.5 起存在"写 `>=22.5.0`，与第 6 节原话同一纪律。④ 配套：`tsup` 与并发 fixture 的编译目标 `node24`→`node22`；CI 矩阵加 node 轴 `['22','24']`，`ci-diagnosis` 文件名随之带 node 主版本（否则同一 OS 两个 job 会互相覆盖，只剩最后写的那个）；`test/setup.ts` 改为**探测运行时真实能力**而非比版本号（模块存在性按版本号判断本就不可靠：22.22.0 有、20.16.0 没有）。⑤ **未做**：`@types/node` 仍是 24.x，类型面与运行面下限不一致（未用到 24 独有 API，22 上实测通过）；改它须同步 `package-lock.json`，需带网络另开任务 | 已定稿 | 第 6 节、10.1、附录 B、`.github/workflows/ci.yml` |
+
 
 | # | 决策 | 状态 | 落点 |
 | :--- | :--- | :--- | :--- |
@@ -1057,6 +1061,6 @@ CLI 不集成 AI。外部 Agent 通过 SKILL 调用 CLI。
 | 冷启动开销可忽略 | `node -e` 完整进程计时：require + 开库 + 一次 `LIKE` 查询 | **1.9–2.9ms**（1000 行库），远低于 200ms 预算 |
 | 无实验性警告污染 stderr | 不加任何过滤直接看 `node -e "require('node:sqlite')"` 的 stderr | 无 `ExperimentalWarning` |
 
-> **spike 的边界，别过度解读**：全部数据来自**单台 Windows 机、Node v24.18.0、单次运行**，规模仅到千级事务。它证明的是"`node:sqlite` 的 WAL 并发语义与快照能力可用、且没有 `better-sqlite3` 才能提供的 `backup()` 这一处真实缺口"，**不是**跨平台稳定性结论 —— Linux/macOS 与 22.x 的行为仍需在 M0 的 CI 三矩阵里复跑同一套脚本。驱动决策（D38）成立所依赖的是上面这组事实，不是"测过了很多遍"。
+> **spike 的边界，别过度解读**：全部数据来自**单台 Windows 机、Node v24.18.0、单次运行**，规模仅到千级事务。它证明的是"`node:sqlite` 的 WAL 并发语义与快照能力可用、且没有 `better-sqlite3` 才能提供的 `backup()` 这一处真实缺口"，**不是**跨平台稳定性结论 —— Linux/macOS 仍需在 M0 的 CI 三矩阵里复跑同一套脚本。**22.x 已补测（2026-10-08，见 D52）**：AC-3 并发用例在 22.22.0 上 768ms／零 `DB_LOCKED`，与 24 同量级；但下表"无实验性警告污染 stderr"一行**只对 24 成立**，22.x 会发 `ExperimentalWarning`，靠 `src/db/sqlite.ts` 的进程内过滤解决。驱动决策（D38）成立所依赖的是上面这组事实，不是"测过了很多遍"。
 
 > 表中数字为本机单次测量，用于**量级判断**（LIKE 与 FTS5 差距在毫秒级、远小于 200ms 预算），不作为基准测试结论。D1 的成立不依赖耗时数字，只依赖"中文 0 命中"这一条。

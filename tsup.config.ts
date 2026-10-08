@@ -3,7 +3,8 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: { index: 'src/index.ts' },
   format: ['esm'],
-  target: 'node24',
+  // 目标与 engines 下限对齐（22.x）：产物必须能在 Node 22 上解析。
+  target: 'node22',
   platform: 'node',
   // 单一 bundle：CLI 交付物是 dist/index.js 一个文件（bin 指向它）。
   splitting: false,

@@ -3,6 +3,9 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
+    // Node 版本前置：22.x 下 node:sqlite 的 ExperimentalWarning 会污染 stderr，
+    // 让契约用例集体报成假失败。见 test/setup.ts。
+    setupFiles: ['test/setup.ts'],
     environment: 'node',
     // 子进程并发用例（AC-3）与 execFile 冒烟用例会在真实进程里打开同一个库文件，
     // 用 forks 而不是 worker_threads，避免线程池与 Windows 下的 spawn 语义互相干扰。
