@@ -2,7 +2,12 @@ node_modules/
 dist/
 dist-test/
 coverage/
-.tmp-demo/
+# 演示与临时沙箱：demo 脚本、手工冒烟、探针库都落在这里。
+# 用通配而非逐个列举 —— `.tmp-*` 下的假 HOME（如 Roaming/workreport/Config/config.json）
+# 不在 *.db 的覆盖范围内，逐个列举必然漏，`git add -A` 就会把 scratch 配置带进历史。
+.tmp-*/
+# 宿主工具（MCP session keeper 等）的运行态：不是本仓库的源。
+.runtime/
 *.tgz
 *.log
 *.db

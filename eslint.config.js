@@ -69,7 +69,11 @@ export default tseslint.config(
     ignores: [
       'dist/**',
       'dist-test/**',
-      '.tmp-demo/**',
+      // 与 .gitignore 同一口径：`.tmp-*` 是演示/冒烟/探针沙箱，`.runtime` 是宿主
+      // 工具（MCP session keeper 等）的运行态 —— 都不是本仓库的源，不该进 lint。
+      // 用通配而非列举：手工探针会临时落在 `.tmp-*` 下，逐个列举必然漏。
+      '.tmp-*/**',
+      '.runtime/**',
       'coverage/**',
       'node_modules/**',
       'spikes/**',
