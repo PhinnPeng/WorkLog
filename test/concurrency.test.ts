@@ -5,6 +5,13 @@
  * worker 用 tsup 现编到 dist-test/（不发布，files 只含 dist），因为要跑的是
  * `src/db/session.ts` 的真实连接设置与事务形态 —— 直接 import 源码进子进程
  * 需要第二套 TS 运行时，那会让"被测的"和"跑的"不是同一份东西。
+ *
+ * :warning: **本套件假设机器上没有别的重型写负载在跑。** 它一次派生 4 个进程做 1000 笔
+ * IMMEDIATE 事务，测的是"多进程写安全性"而非"本机调度能力"。实测（2026-10-08）：
+ * 同时跑两个 `npm run verify`（例如两个 Node 版本各一份）时，两边的进程集会把
+ * `busy_timeout=5000` 抢穿，本套件报 `worker 0 退出码 1：database is locked` ——
+ * 那是资源竞争造成的假失败，单跑必绿、串行重复跑亦稳定 112/112。
+ * 判据：出现该错误时**先确认机器上没有并行的 verify**，再怀疑代码。
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFile, spawn } from 'node:child_process';

@@ -75,3 +75,50 @@ jobs:
           # 所以把 node 主版本一并带过去，由脚本拼进路径与标题。
           NODE_MAJOR: ${{ matrix.node }}
         run: node scripts/ci-publish-status.mjs
+
+  # 名字刻意写清：这条 job 验证的是"**拒绝方式合规**"，不是"能跑"。
+  # 别把它读成"支持 Node 20"。
+  runtime-refusal:
+    name: 运行时下限外的拒绝方式合规（不是支持 Node 20）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 低于 engines 下限（>=22.22.0 <23 || >=23.4.0）的版本：20 完全没有 node:sqlite
+          node-version: '20'
+          cache: npm
+
+      # 只跑 build —— 不跑 npm ci / npm run verify：低版本上 devDependencies 未必装得上，
+      # 而本 job 要证的只是"我们拒绝得合规"，不是"我们在 20 上可用"。
+      - name: 安装运行时依赖并构建
+        run: npm install --omit=dev --no-save && npx --yes tsup
+
+      - name: 断言：单行 JSON + RUNTIME_UNSUPPORTED + 退出 3 + 无堆栈
+        shell: bash
+        run: |
+          set -o pipefail
+          set +e
+          stderr=$(node dist/index.js describe 2>&1 >/dev/null)
+          code=$?
+          set -e
+          printf '%s\n' "$stderr" > .refusal.log
+          echo "退出码: $code"
+          echo "stderr:"
+          printf '%s\n' "$stderr"
+
+          if [ "$code" != "3" ]; then echo "::error::退出码应为 3，实为 $code"; exit 1; fi
+          if [ "$(printf '%s\n' "$stderr" | wc -l)" != "1" ]; then
+            echo "::error::stderr 必须是单行 JSON（5.2.1）；修复前这里是 Node 的多行堆栈"; exit 1
+          fi
+          node -e '
+            const p = JSON.parse(require("fs").readFileSync(".refusal.log", "utf8"));
+            if (p.code !== "RUNTIME_UNSUPPORTED") { console.error("::error::code 应为 RUNTIME_UNSUPPORTED，实为 " + p.code); process.exit(1); }
+            if (!p.node || !p.requires) { console.error("::error::错误对象须带 node 与 requires 字段"); process.exit(1); }
+            console.log("OK 拒绝方式合规：单行 JSON + RUNTIME_UNSUPPORTED + node/requires 字段齐备");
+          '
+          # stdout 必须为空（数据体不得混入错误路径）
+          if [ -n "$(node dist/index.js describe 2>/dev/null)" ]; then
+            echo "::error::stdout 应为空"; exit 1
+          fi

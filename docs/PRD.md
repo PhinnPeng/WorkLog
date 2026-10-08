@@ -265,6 +265,16 @@ CREATE TABLE schema_version (version INTEGER NOT NULL);
 
 **编码**：`stdout`/`stderr` 均为 UTF-8、无 BOM；数据体末尾恰好一个换行符。
 
+**错误路径也受流分离约束，包括"还没进到命令分发"的那些失败**
+这条是 2026-10-08 补的（D53），因为它此前只在"命令已跑起来"的前提下成立：
+宿主 Node 低于运行时下限时，`node:sqlite` 的缺失会让**整个模块图在入口之前断掉**，
+于是抛出去的是 Node 自己的多行堆栈，而不是单行 JSON 错误对象。Agent 按契约
+`JSON.parse(stderr)` 会崩在 `    at ModuleLoader…` 那一行。
+- 因此入口必须自举：先探测运行时能力、再动态加载命令层，把加载失败转成
+  `RUNTIME_UNSUPPORTED`／退出 3 的**单行 JSON**（`src/index.ts`）。
+- 判据：**任何**导致命令无法执行的失败，其 stderr 都必须是单行 JSON。这不是
+  "错误处理要写好"的泛泛要求，而是"`JSON.parse(stderr)` 永不失败"这条硬契约的一部分。
+
 **紧凑优先**：JSON 默认单行紧凑（`JSON.stringify(v)`），仅 `--pretty` 时缩进。理由：输出按 token 计费被 Agent 读走，缩进是纯浪费 —— 单条约 200 → 320 字节，200 条的 `list` 差值约 24KB，与第 1 节“减少 AI token 消耗”目标直接相关。
 
 **成功输出**分两种形态：
@@ -399,7 +409,7 @@ workreport convert --id <id> --to plan --planned-for YYYY-MM-DD
 **删除是软删除。** 调用方是会幻觉的 LLM，它可能从搜索结果里取错 `id`；而 `backup` 是手动的，物理删除在这个工具里等同不可恢复的数据丢失。
 
 ```bash
-workreport delete --id <id> [--dry-run] [--reason "..."]   # 置 deleted_at
+workreport delete --id <id> [--dry-run]                       # 置 deleted_at
 workreport restore --id <id>                                # 清 deleted_at
 workreport purge --older-than <Nd> --yes                   # 真正物理删除过期墓碑
 workreport list --include-deleted                           # 含墓碑
@@ -753,8 +763,10 @@ CLI 不集成 AI。外部 Agent 通过 SKILL 调用 CLI。
 | `SCHEMA_TOO_NEW` | 库的 `schema_version` 高于本 CLI 支持版本 | 3 |
 | `DB_NOT_INITIALIZED` | 目标库存在但无 `work_items` 表 | 3 |
 | `CONFIG_INVALID` | `config.json` 解析失败或字段值非法 | 3 |
+| `RUNTIME_UNSUPPORTED` | 宿主 Node 不提供本工具所需的运行时能力（如无需 flag 的 `node:sqlite`），错误对象带 `node`／`requires` | 3 |
 
 - `CONVERT_SOURCE_TYPE_MISMATCH` 覆盖两个方向（`--to log` 但源已是 `log`、`--to plan` 但源已是 `plan`），由 `expected`／`actual` 字段区分，不再各占一个码（见 5.2.5）。
+- `RUNTIME_UNSUPPORTED` 是 2026-10-08 新增（**minor**，D53）。它的必要性与"为什么不能沿用 `INTERNAL_ERROR`"见 5.2.1 的补充段与第 6 节。
 
 ---
 
@@ -790,6 +802,35 @@ CLI 不集成 AI。外部 Agent 通过 SKILL 调用 CLI。
 - **安装**：`npm install -g @phinnpeng/workreport`。采用 `node:sqlite` 后此路径**不再有编译工具链要求**（无 prebuilt 下载、无 node-gyp），这是驱动决策的主要收益。
 - **数据隐私**：所有数据本地存储，**运行期零网络请求**。选 `node:sqlite` 后连安装期的 prebuilt 下载也消失，供应链面缩到三个纯 JS 包。
 - **Windows 兼容性**：目录由 `env-paths` 给出（第 8 节）；数据目录路径含空格（`AppData\Roaming`），错误信息与 `doctor` 回显须原样带空格而非截断。原生模块编译风险随 `node:sqlite` 的采用而消失。
+- **运行时下限外的行为：拒绝，不降级**（D53）。低于 `engines` 下限的 Node 上，CLI **不做任何尽力而为**，
+  而是输出 `RUNTIME_UNSUPPORTED`／退出 3 的单行 JSON。理由是 5.7.2 对退出码 3 的定义就是
+  "环境错，停止并交回人类" —— "尽力降级"与这一定义相悖；且低版本下唯一能活的命令只有
+  `describe` 与 `config`，而 Agent 连一条命令都执行不了时，取到命令面也没有意义。
+  取证：`test/compat.test.ts` 用**真的低版本 Node** 断言"单行 JSON + 该码 + 退出 3 + 无堆栈"，
+  CI 另有 `runtime-refusal` job 在 Node 20 上复核（该 job 的语义是**验证拒绝方式合规，
+  不是支持 Node 20**，名字已写清以免误读）。
+  若日后确需"旧 Node 上也能用 `describe`"，把 `db/sqlite.ts` 改成惰性加载即可 —— 本决策不堵死这条路。
+
+## 兼容性契约（四条轴，D53）
+
+本节把"CLI 与外部世界如何跨版本共存"写成契约。四条轴各自的外部世界都不受本 CLI 控制，
+所以每一条都需要**明确的策略**而不是各自为政的补丁。以下全部有实测或用例支撑
+（证据见 `test/compat.test.ts`、`test/migrate.test.ts`）：
+
+| 轴 | 外部世界会怎么变 | 策略 | 关键实现 |
+| :--- | :--- | :--- | :--- |
+| **运行时**（Node） | 宿主决定用哪个 node 启动我们 | 下限外**拒绝**，不降级 | 入口自举 + `RUNTIME_UNSUPPORTED` |
+| **数据**（SQLite 库） | 库可能由更高版本建立、或含更高版本才认识的取值 | 结构版本是硬闸门；**表内未知列与未知枚举值一律容忍** | 迁移数组只追加；`SELECT` 永远用显式列清单（不用 `SELECT *`） |
+| **配置**（`config.json`） | 同一份配置被多个版本的 CLI 轮流读写 | 未知键**保留不删**（降级安全）；非法值不回落 | `writeConfig` 基于原对象展开，不按已知键重建 |
+| **契约**（命令面／错误码／退出码） | 调用方的行为建立在它之上 | 受 semver 治理，改动即破坏 | `describe` 与命令定义**同源生成**（不手抄第二份表） |
+
+- **数据轴的判据边界**：`SCHEMA_TOO_NEW` 拦的是"结构不认识"（`schema_version` 更高）；
+  而"结构认识、但取值超出本版本词表"（如更高版本放宽了 `status` 枚举）**必须容忍** ——
+  读出即原样透传，改其他字段也不报错。把后者也当错误会逼用户在升级 CLI 前无法读自己的数据。
+- **配置轴为什么必须保留未知键**：否则"用旧版跑一次"就会静默抹掉新版写入的配置，
+  而用户看到的现象是"配置莫名其妙没了" —— 与本 PRD 反复规避的那类最难排查的故障同形。
+- **本节的维护纪律**：任何"外部世界变了怎么办"的新问题，先归到上面四条轴之一；
+  归不进去的说明是第五条轴，应当写进本节而不是散落在某条命令的说明里。
 
 ---
 
@@ -1064,3 +1105,4 @@ CLI 不集成 AI。外部 Agent 通过 SKILL 调用 CLI。
 > **spike 的边界，别过度解读**：全部数据来自**单台 Windows 机、Node v24.18.0、单次运行**，规模仅到千级事务。它证明的是"`node:sqlite` 的 WAL 并发语义与快照能力可用、且没有 `better-sqlite3` 才能提供的 `backup()` 这一处真实缺口"，**不是**跨平台稳定性结论 —— Linux/macOS 仍需在 M0 的 CI 三矩阵里复跑同一套脚本。**22.x 已补测（2026-10-08，见 D52）**：AC-3 并发用例在 22.22.0 上 768ms／零 `DB_LOCKED`，与 24 同量级；但下表"无实验性警告污染 stderr"一行**只对 24 成立**，22.x 会发 `ExperimentalWarning`，靠 `src/db/sqlite.ts` 的进程内过滤解决。驱动决策（D38）成立所依赖的是上面这组事实，不是"测过了很多遍"。
 
 > 表中数字为本机单次测量，用于**量级判断**（LIKE 与 FTS5 差距在毫秒级、远小于 200ms 预算），不作为基准测试结论。D1 的成立不依赖耗时数字，只依赖"中文 0 命中"这一条。
+| D53 | **兼容性契约成文为四条轴；运行时下限外一律拒绝不降级**（用户 2026-10-08 拍"全量按推荐"）。① **四轴**：运行时（Node 版本）／数据（SQLite 库）／配置（`config.json`）／契约（命令面·错误码·退出码）—— 每轴的外部世界都不受本 CLI 控制，故各有明确策略并写进第 6 节，不再散落在各命令说明里。② **运行时轴的实际缺口与修复**：低于 `engines` 下限时，`src/db/sqlite.ts` 的顶层 `await import('node:sqlite')` 让**整个模块图在入口之前断掉**，`runMain` 的 try/catch 接不住，Node 抛自己的多行堆栈（实测 Node 20.16.0）—— 直接违反 5.2.1／D3，Agent 崩在 `    at ModuleLoader…` 那行。修复分两层：`src/index.ts` 改为入口自举（先动态 import、失败转契约错误），`src/db/sqlite.ts` 把探测抽成可传说明符的 `loadSqlite()` 并抛携带型号信息的错误。③ **新增 `RUNTIME_UNSUPPORTED`／退出 3**（按 D4 判 **minor**；不复用 `INTERNAL_ERROR` 的理由是它不携带"该怎么办"，而那是环境错的全部价值），错误对象带 `node` 与 `requires` 字段。④ **选"拒绝"而非"尽力降级"**：5.7.2 对退出码 3 的定义就是"环境错，停止并交回人类"；且低版本下唯一能活的只有 `describe` 与 `config`，而 Agent 连一条命令都执行不了时取到命令面没有意义；降级方案还要把 4 个 import 点改成惰性单例，为边角路径引入常态复杂度。日后若确需，改惰性加载即可，本决策不堵死。⑤ **另三轴的实测结论**（此前只有机制、没有证据）：数据轴容忍表内未知列（不覆盖其值）与未知枚举值（原样透传、改其他字段不报错）；配置轴降级安全（旧 CLI 写配置保留未知键 —— 否则"用旧版跑一次"会静默抹掉新版配置）；契约轴同源生成受 semver 治理。⑥ **验证**：`test/compat.test.ts` 6 条覆盖四轴，其中运行时那条用**真的低版本 Node**（模拟不出来 —— 内置模块的失败是"模块图在 main 之前断"，摘模块缓存测到的是另一条路径）；CI 增 `runtime-refusal` job 在 Node 20 上复核，**名字写明是"验证拒绝方式合规"而非"支持 Node 20"**，以免日后误读。⑦ 顺带收口编辑遗留：5.2.6 的 usage 行删掉 `--reason`（正文与 D23 均无此需求，5.1.4 也没有该列；按 D16 同一判据"没有需求依赖就先不加"，应删行而非加列） | 已定稿 | 第 6 节、5.2.1、5.2.6、5.7.3 |

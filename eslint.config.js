@@ -108,6 +108,20 @@ export default tseslint.config(
     },
   },
   {
+    // 例外 3：bin 入口的自举层 —— 唯一允许"既写流又带码字面量"的地方。
+    //
+    // 理由：它存在的全部意义是接住**模块图加载失败**（`src/db/sqlite.ts` 的顶层
+    // await import 在低版本 Node 上断链）。走到那一支时，任何 import —— 包括
+    // cli/output.ts 与 cli/errors.ts —— 都可能再次失败，所以错误载荷只能就地手写。
+    // 这层外壳刻意保持极薄：只允许出现 RUNTIME_UNSUPPORTED 与退出码 3，
+    // 其余输出与码值一律仍归 output.ts／errors.ts。见 PRD D53。
+    files: ['src/index.ts'],
+    rules: {
+      'no-restricted-syntax': 'off',
+      'no-restricted-imports': 'off',
+    },
+  },
+  {
     // 测试代码要捕获流、要断言错误码字面量，天然需要触碰这些。
     files: ['test/**/*.ts'],
     rules: {

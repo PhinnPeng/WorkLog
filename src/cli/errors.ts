@@ -21,6 +21,7 @@ export const Code = {
   MIGRATION_FAILED: 'MIGRATION_FAILED',
   PATH_NOT_WRITABLE: 'PATH_NOT_WRITABLE',
   CONFIG_INVALID: 'CONFIG_INVALID',
+  RUNTIME_UNSUPPORTED: 'RUNTIME_UNSUPPORTED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
 } as const;
 
@@ -45,6 +46,9 @@ const EXIT_BY_CODE: Record<Code, 1 | 2 | 3> = {
   MIGRATION_FAILED: 3,
   PATH_NOT_WRITABLE: 3,
   CONFIG_INVALID: 3,
+  // 宿主 Node 不支持本工具所需的运行时能力（如无需 flag 的 node:sqlite）。
+  // 归 3：这是环境错，Agent 无法自行修复，须交回人类换运行时。
+  RUNTIME_UNSUPPORTED: 3,
   INTERNAL_ERROR: 3,
 };
 

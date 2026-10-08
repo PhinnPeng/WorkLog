@@ -10,7 +10,40 @@
  * 用计算说明符（非字面量）即可绕开静态改写；`typeof import(...)` 是纯类型，
  * 不参与打包，所以类型信息照常保留。
  */
+import { Code, WorkReportError } from '../cli/errors.js';
+
 const specifier = 'node:' + 'sqlite';
+
+/** `engines` 的声明值；加载失败时回显给调用方，省得它去翻 package.json。 */
+export const SQLITE_REQUIRES = '>=22.22.0 <23 || >=23.4.0';
+
+/**
+ * 探测"本进程能否拿到可用的 node:sqlite"。
+ *
+ * 抽成**接收说明符的函数**是为了可被单测覆盖：传入不存在的说明符，就能在 CI 主矩阵
+ * 里跑出与"低版本 Node"完全相同的失败路径，不必为了测一条错误分支去装一个旧 Node。
+ * 真要验证端到端行为，仍须用真的低版本 Node（见 `.github/workflows/ci.yml` 的
+ * `runtime-refusal` job）—— 那条路径测的是"整个模块图在 main 之前断掉"这件事本身。
+ */
+export async function loadSqlite(
+  spec: string = specifier,
+): Promise<typeof import('node:sqlite')> {
+  try {
+    return (await import(spec)) as typeof import('node:sqlite');
+  } catch (e) {
+    // 把驱动的加载失败翻译成契约错误：调用方要看到的是"该怎么办"，而不是一条
+    // ERR_UNKNOWN_BUILTIN_MODULE 的原始多行堆栈（5.2.1／D3）。
+    throw new WorkReportError(
+      Code.RUNTIME_UNSUPPORTED,
+      `本机 Node（${process.version}）无法提供 ${spec}：${e instanceof Error ? e.message : String(e)}`,
+      {
+        node: process.version,
+        requires: SQLITE_REQUIRES,
+        hint: '本工具的存储层依赖 Node 内置 node:sqlite（22.5 引入但需 --experimental-sqlite，23.4 起取消 flag）。升级 Node 后重试。',
+      },
+    );
+  }
+}
 
 /**
  * 吞掉 `node:sqlite` 的实验特性警告。
@@ -26,6 +59,9 @@ const specifier = 'node:' + 'sqlite';
  *
  * 只过滤 `ExperimentalWarning` + 消息含 `SQLite`；其余警告原样放行 —— 否则把将来
  * 真正需要我们看见的实验特性变更一起吞掉了。
+ *
+ * 顺序要紧：**必须在 `loadSqlite()` 之前装好**，因为警告在首次使用模块时才发出，
+ * 且 js 的实例化早于顶层 await 之后的行。
  */
 const originalEmitWarning = process.emitWarning.bind(process) as (...args: unknown[]) => void;
 const sqliteWarningFilter = (warning: string | Error, ...rest: unknown[]): void => {
@@ -42,8 +78,7 @@ const sqliteWarningFilter = (warning: string | Error, ...rest: unknown[]): void 
 };
 process.emitWarning = sqliteWarningFilter as unknown as typeof process.emitWarning;
 
-type SqliteModule = typeof import('node:sqlite');
-const mod = (await import(specifier)) as unknown as SqliteModule;
+const mod = await loadSqlite(specifier);
 
 export const DatabaseSync = mod.DatabaseSync;
 

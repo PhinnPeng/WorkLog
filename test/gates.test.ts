@@ -16,6 +16,15 @@ import { extractErrorCodes } from '../scripts/extract-codes.mjs';
 const SRC = 'src';
 const OUTPUT_TS = join(SRC, 'cli', 'output.ts');
 const ERRORS_TS = join(SRC, 'cli', 'errors.ts');
+/**
+ * bin 入口的自举层（PRD D53）。它是**唯一**允许"既写流又带码字面量"的例外，
+ * 理由：它存在的意义是接住模块图加载失败 —— 走到那一支时任何 import 都可能再次
+ * 失败，所以错误载荷只能就地手写。
+ *
+ * 例外要窄到可验证，所以下面额外断言它的用量上限（一处 stderr、一个码），
+ * 而不是简单地把它从扫描里排除。
+ */
+const ENTRY_TS = join(SRC, 'index.ts');
 
 function tsFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((e) => {
@@ -43,9 +52,17 @@ describe('门禁 A · 流分离', () => {
     const banned = /process\s*\.\s*(stdout|stderr)|process\s*\[\s*['"](stdout|stderr)['"]|\{\s*(stdout|stderr)\s*\}\s*=\s*process/;
     const offenders = files
       .filter((f) => rel(f) !== OUTPUT_TS.replaceAll('\\', '/'))
+      .filter((f) => rel(f) !== ENTRY_TS.replaceAll('\\', '/'))
       .filter((f) => banned.test(readFileSync(f, 'utf8')))
       .map((f) => rel(f));
     expect(offenders).toEqual([]);
+  });
+
+  it('入口自举层不得滥用这个例外：只有一处 stderr 写入，且不碰 stdout', () => {
+    const src = readFileSync(ENTRY_TS, 'utf8');
+    const stderrWrites = src.match(/process\s*\.\s*stderr\s*\.\s*write/g) ?? [];
+    expect(stderrWrites, '入口自举只该有一个错误出口').toHaveLength(1);
+    expect(src).not.toMatch(/process\s*\.\s*stdout/);
   });
 });
 
@@ -56,9 +73,20 @@ describe('门禁 A · 错误码单点定义', () => {
     const banned = new RegExp(`['"\`](${alt})['"\`]`);
     const offenders = files
       .filter((f) => rel(f) !== ERRORS_TS.replaceAll('\\', '/'))
+      .filter((f) => rel(f) !== ENTRY_TS.replaceAll('\\', '/'))
       .filter((f) => banned.test(readFileSync(f, 'utf8')))
       .map((f) => rel(f));
     expect(offenders).toEqual([]);
+  });
+
+  it('入口自举层只许出现 RUNTIME_UNSUPPORTED 一个码，且与码表一致', () => {
+    const src = readFileSync(ENTRY_TS, 'utf8');
+    const literals = (src.match(new RegExp(`['"\`](${extractErrorCodes().join('|')})['"\`]`, 'g')) ?? []).map(
+      (s) => s.slice(1, -1),
+    );
+    // 多余一个都说明入口在承担它不该承担的职责，应当搬回命令层
+    expect(new Set(literals)).toEqual(new Set(['RUNTIME_UNSUPPORTED']));
+    expect(Code.RUNTIME_UNSUPPORTED).toBe('RUNTIME_UNSUPPORTED');
   });
 });
 
